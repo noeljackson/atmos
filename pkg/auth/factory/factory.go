@@ -46,6 +46,8 @@ func NewFactory() *Factory {
 	}
 	RegisterGCPProviders(f)
 	RegisterGCPIdentities(f)
+	RegisterHetznerProviders(f)
+	RegisterHetznerIdentities(f)
 	return f
 }
 

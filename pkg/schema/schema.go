@@ -886,6 +886,9 @@ type AuthContext struct {
 	// GCP holds GCP credentials if a GCP identity is active.
 	GCP *GCPAuthContext `json:"gcp,omitempty" yaml:"gcp,omitempty" mapstructure:"gcp"`
 
+	// Hetzner holds Hetzner credentials if a Hetzner identity is active.
+	Hetzner *HetznerAuthContext `json:"hetzner,omitempty" yaml:"hetzner,omitempty" mapstructure:"hetzner"`
+
 	// Future: Add other cloud providers as needed
 	// GitHub *GitHubAuthContext `json:"github,omitempty" yaml:"github,omitempty"`
 }
@@ -967,6 +970,22 @@ type GCPAuthContext struct {
 	ConfigDir string `json:"config_dir,omitempty" yaml:"config_dir,omitempty" mapstructure:"config_dir"`
 	// CredentialsFile is the path to the credentials file managed by Atmos.
 	CredentialsFile string `json:"credentials_file,omitempty" yaml:"credentials_file,omitempty" mapstructure:"credentials_file"`
+}
+
+// HetznerAuthContext holds Hetzner-specific authentication context.
+type HetznerAuthContext struct {
+	// Project is the human-friendly project label from auth config.
+	Project string `json:"project,omitempty" yaml:"project,omitempty" mapstructure:"project"`
+	// ProjectID is the Hetzner project ID when configured.
+	ProjectID string `json:"project_id,omitempty" yaml:"project_id,omitempty" mapstructure:"project_id"`
+	// ProjectName is the Hetzner project name when configured.
+	ProjectName string `json:"project_name,omitempty" yaml:"project_name,omitempty" mapstructure:"project_name"`
+	// S3Endpoint is the Hetzner Object Storage endpoint.
+	S3Endpoint string `json:"s3_endpoint,omitempty" yaml:"s3_endpoint,omitempty" mapstructure:"s3_endpoint"`
+	// S3Region is the Object Storage region.
+	S3Region string `json:"s3_region,omitempty" yaml:"s3_region,omitempty" mapstructure:"s3_region"`
+	// S3AccessKeyID is non-secret Object Storage access key metadata.
+	S3AccessKeyID string `json:"s3_access_key_id,omitempty" yaml:"s3_access_key_id,omitempty" mapstructure:"s3_access_key_id"`
 }
 
 type ConfigAndStacksInfo struct {

@@ -47,6 +47,9 @@ func (s *memoryKeyringStore) Store(alias string, creds types.ICredentials, realm
 	case *types.OIDCCredentials:
 		typ = "oidc"
 		raw, err = json.Marshal(c)
+	case *types.HetznerCredentials:
+		typ = "hetzner"
+		raw, err = json.Marshal(c)
 	default:
 		return fmt.Errorf("%w: %T", errors.Join(ErrCredentialStore, ErrUnsupportedCredentialType), creds)
 	}
@@ -100,6 +103,12 @@ func (s *memoryKeyringStore) Retrieve(alias string, realm string) (types.ICreden
 		var c types.OIDCCredentials
 		if err := json.Unmarshal(env.Data, &c); err != nil {
 			return nil, errors.Join(ErrCredentialStore, fmt.Errorf("failed to unmarshal OIDC credentials: %w", err))
+		}
+		return &c, nil
+	case "hetzner":
+		var c types.HetznerCredentials
+		if err := json.Unmarshal(env.Data, &c); err != nil {
+			return nil, errors.Join(ErrCredentialStore, fmt.Errorf("failed to unmarshal Hetzner credentials: %w", err))
 		}
 		return &c, nil
 	default:

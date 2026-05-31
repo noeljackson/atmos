@@ -233,7 +233,10 @@ func isAuthManagedVar(key string) bool {
 		"CLOUDSDK_CONFIG",
 		"GOOGLE_CLOUD_PROJECT",
 		"GCLOUD_PROJECT",
-		"CLOUDSDK_CORE_PROJECT":
+		"CLOUDSDK_CORE_PROJECT",
+		// Hetzner auth-managed vars.
+		"HCLOUD_TOKEN",
+		"AWS_ENDPOINT_URL_S3":
 		return true
 	default:
 		return false

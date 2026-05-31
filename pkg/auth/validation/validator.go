@@ -128,7 +128,7 @@ func (v *validator) ValidateIdentity(name string, identity *schema.Identity, pro
 
 // validateViaConfiguration validates the optional Via provider/identity references for an identity.
 func (v *validator) validateViaConfiguration(identity *schema.Identity, providers map[string]*schema.Provider) error {
-	if identity.Kind == "aws/user" || identity.Via == nil {
+	if identity.Kind == "aws/user" || identity.Kind == "hetzner/object-storage" || identity.Via == nil {
 		return nil
 	}
 

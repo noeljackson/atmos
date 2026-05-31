@@ -634,9 +634,9 @@ func (m *manager) buildChainRecursive(identityName string, chain *[]string, visi
 	}
 
 	// Standalone identities don't require via configuration.
-	// AWS user, AWS ambient, and generic ambient identities are all standalone.
+	// AWS user, ambient identities, and shared static credential identities are standalone.
 	if identity.Via == nil {
-		if identity.Kind == "aws/user" || identity.Kind == "aws/ambient" || identity.Kind == "ambient" {
+		if identity.Kind == "aws/user" || identity.Kind == "aws/ambient" || identity.Kind == "ambient" || identity.Kind == "hetzner/object-storage" {
 			*chain = append(*chain, identityName)
 			return nil
 		}

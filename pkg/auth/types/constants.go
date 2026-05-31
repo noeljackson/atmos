@@ -24,6 +24,11 @@ const (
 	IdentityKindGCPServiceAccount = "gcp/service-account"
 	IdentityKindGCPProject        = "gcp/project"
 
+	// Hetzner provider and identity kinds.
+	ProviderKindHetznerToken         = "hetzner/token"
+	IdentityKindHetznerProject       = "hetzner/project"
+	IdentityKindHetznerObjectStorage = "hetzner/object-storage"
+
 	// GitHub provider kinds.
 	ProviderKindGitHubOIDC = "github/oidc"
 )

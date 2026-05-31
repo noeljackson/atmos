@@ -14,14 +14,15 @@ import (
 	cfg "github.com/cloudposse/atmos/pkg/config"
 	"github.com/cloudposse/atmos/pkg/flags"
 	"github.com/cloudposse/atmos/pkg/perf"
+	"github.com/cloudposse/atmos/pkg/schema"
 	"github.com/cloudposse/atmos/pkg/ui"
 )
 
 // authUserConfigureCmd prompts for static AWS user credentials and stores them in keyring.
 var authUserConfigureCmd = &cobra.Command{
 	Use:                "configure",
-	Short:              "Configure static AWS user credentials (stored securely in keyring)",
-	Long:               `Configure static AWS user credentials (stored securely in keyring)`,
+	Short:              "Configure static user credentials (stored securely in keyring)",
+	Long:               `Configure static user credentials (stored securely in keyring)`,
 	FParseErrWhitelist: struct{ UnknownFlags bool }{UnknownFlags: false},
 	RunE:               executeAuthUserConfigureCommand,
 }
@@ -45,35 +46,53 @@ func executeAuthUserConfigureCommand(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf(errUtils.ErrWrapFormat, errUtils.ErrInvalidAuthConfig, err)
 	}
 
-	// Select aws/user identities.
-	selectable, _, err := selectAWSUserIdentities(atmosConfig.Auth.Identities)
+	// Select identities that support static keyring-backed configuration.
+	selectable, defaultChoice, err := selectConfigurableUserIdentities(atmosConfig.Auth.Identities)
 	if err != nil {
 		return err
 	}
 
 	// Guard: ensure there are identities to configure.
 	if len(selectable) == 0 {
-		return fmt.Errorf("%w: no AWS user identities found in configuration", errUtils.ErrNoIdentitiesAvailable)
+		return fmt.Errorf("%w: no configurable identities found in configuration", errUtils.ErrNoIdentitiesAvailable)
 	}
 
 	// Choose identity.
-	choice := selectable[0]
-	selector := huh.NewSelect[string]().
-		Value(&choice).
-		OptionsFunc(func() []huh.Option[string] { return huh.NewOptions(selectable...) }, nil).
-		Title("Choose an identity to configure").
-		WithTheme(utils.NewAtmosHuhTheme())
-	if err := selector.Run(); err != nil {
-		return err
+	choice := getIdentityFlagValue(cmd)
+	if choice == cfg.IdentityFlagSelectValue {
+		choice = ""
+	}
+	if choice != "" {
+		if err := validateConfigurableIdentityChoice(atmosConfig.Auth.Identities, choice); err != nil {
+			return err
+		}
+	} else {
+		choice = defaultChoice
+		selector := huh.NewSelect[string]().
+			Value(&choice).
+			OptionsFunc(func() []huh.Option[string] { return huh.NewOptions(selectable...) }, nil).
+			Title("Choose an identity to configure").
+			WithTheme(utils.NewAtmosHuhTheme())
+		if err := selector.Run(); err != nil {
+			return err
+		}
 	}
 
-	// For AWS User identities, use the identity name directly as alias.
-	alias := choice // AWS User identities are standalone, no provider needed.
-
-	// Extract credential information from YAML config.
 	selectedIdentity := atmosConfig.Auth.Identities[choice]
-	yamlInfo := extractAWSUserInfo(selectedIdentity)
+	switch selectedIdentity.Kind {
+	case authTypes.ProviderKindAWSUser:
+		return configureAWSUserIdentity(selectedIdentity, choice)
+	case authTypes.IdentityKindHetznerProject:
+		return configureHetznerProjectIdentity(selectedIdentity, choice)
+	case authTypes.IdentityKindHetznerObjectStorage:
+		return configureHetznerObjectStorageIdentity(selectedIdentity, choice)
+	default:
+		return fmt.Errorf("%w: identity %q has unsupported kind %q for auth user configure", errUtils.ErrInvalidAuthConfig, choice, selectedIdentity.Kind)
+	}
+}
 
+func configureAWSUserIdentity(selectedIdentity schema.Identity, alias string) error {
+	yamlInfo := extractAWSUserInfo(selectedIdentity)
 	// Check if all credentials are managed by Atmos configuration.
 	if yamlInfo.AllInYAML {
 		// All credentials are in YAML - nothing to configure in keyring.
@@ -87,6 +106,47 @@ func executeAuthUserConfigureCommand(cmd *cobra.Command, args []string) error {
 
 	// Prompt and save credentials.
 	return promptAndSaveCredentials(yamlInfo, alias)
+}
+
+func configureHetznerProjectIdentity(selectedIdentity schema.Identity, alias string) error {
+	yamlInfo := extractHetznerProjectInfo(selectedIdentity)
+	if yamlInfo.AllConfigured {
+		ui.Writeln("Hetzner project token is managed by Atmos configuration (atmos.yaml)")
+		ui.Writeln("To update credentials, edit your atmos.yaml configuration file")
+		return nil
+	}
+	creds, err := promptForHetznerProjectCredentials(yamlInfo)
+	if err != nil {
+		return err
+	}
+	store := credentials.NewCredentialStore()
+	if err := store.Store(alias, creds, ""); err != nil {
+		return fmt.Errorf(errUtils.ErrWrapFormat, errUtils.ErrAuthenticationFailed, err)
+	}
+	ui.Writef("Saved Hetzner project credentials to keyring: %s\n", alias)
+	if yamlInfo.ObjectStorageIdentity != "" {
+		ui.Writef("Object Storage identity: %s\n", yamlInfo.ObjectStorageIdentity)
+	}
+	return nil
+}
+
+func configureHetznerObjectStorageIdentity(selectedIdentity schema.Identity, alias string) error {
+	yamlInfo := extractHetznerObjectStorageInfo(selectedIdentity)
+	if yamlInfo.AllConfigured {
+		ui.Writeln("Hetzner Object Storage credentials are managed by Atmos configuration (atmos.yaml)")
+		ui.Writeln("To update credentials, edit your atmos.yaml configuration file")
+		return nil
+	}
+	creds, err := promptForHetznerObjectStorageCredentials(yamlInfo)
+	if err != nil {
+		return err
+	}
+	store := credentials.NewCredentialStore()
+	if err := store.Store(alias, creds, ""); err != nil {
+		return fmt.Errorf(errUtils.ErrWrapFormat, errUtils.ErrAuthenticationFailed, err)
+	}
+	ui.Writef("Saved Hetzner Object Storage credentials to keyring: %s\n", alias)
+	return nil
 }
 
 // promptAndSaveCredentials prompts for credentials and saves them to keyring.
@@ -169,4 +229,90 @@ func promptForCredentials(yamlInfo awsUserIdentityInfo) (*authTypes.AWSCredentia
 		MfaArn:          mfaArn,
 		SessionDuration: sessionDuration,
 	}, nil
+}
+
+func promptForHetznerProjectCredentials(yamlInfo hetznerProjectIdentityInfo) (*authTypes.HetznerCredentials, error) {
+	defer perf.Track(nil, "auth.user.promptForHetznerProjectCredentials")()
+
+	var token string
+	fields := []huh.Field{
+		buildCredentialFormField(formFieldConfig{
+			YAMLValue:  yamlInfo.Token,
+			InputTitle: "Hetzner API token",
+			NoteTitle:  "Hetzner API token (managed by Atmos configuration)",
+			NoteDesc:   "****** (configured in atmos.yaml)",
+			IsPassword: true,
+		}, &token),
+	}
+	form := huh.NewForm(huh.NewGroup(fields...)).WithTheme(utils.NewAtmosHuhTheme())
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+	return &authTypes.HetznerCredentials{
+		Token:       token,
+		Project:     yamlInfo.Project,
+		ProjectID:   yamlInfo.ProjectID,
+		ProjectName: yamlInfo.ProjectName,
+		TokenEnv:    yamlInfo.TokenEnv,
+	}, nil
+}
+
+func promptForHetznerObjectStorageCredentials(yamlInfo hetznerObjectStorageIdentityInfo) (*authTypes.HetznerCredentials, error) {
+	defer perf.Track(nil, "auth.user.promptForHetznerObjectStorageCredentials")()
+
+	var accessKeyID, secretAccessKey, endpoint, region string
+	fields := []huh.Field{
+		buildCredentialFormField(formFieldConfig{
+			YAMLValue:  yamlInfo.S3AccessKeyID,
+			InputTitle: "Hetzner Object Storage access key ID",
+			NoteTitle:  "Hetzner Object Storage access key ID (managed by Atmos configuration)",
+			NoteDesc:   yamlInfo.S3AccessKeyID,
+		}, &accessKeyID),
+		buildCredentialFormField(formFieldConfig{
+			YAMLValue:  yamlInfo.S3SecretAccessKey,
+			InputTitle: "Hetzner Object Storage secret access key",
+			NoteTitle:  "Hetzner Object Storage secret access key (managed by Atmos configuration)",
+			NoteDesc:   "****** (configured in atmos.yaml)",
+			IsPassword: true,
+		}, &secretAccessKey),
+		buildCredentialFormField(formFieldConfig{
+			YAMLValue:    yamlInfo.S3Endpoint,
+			InputTitle:   "Hetzner Object Storage S3 endpoint (optional)",
+			NoteTitle:    "Hetzner Object Storage S3 endpoint (managed by Atmos configuration)",
+			NoteDesc:     yamlInfo.S3Endpoint,
+			IsOptional:   true,
+			DefaultValue: yamlInfo.S3Endpoint,
+		}, &endpoint),
+		buildCredentialFormField(formFieldConfig{
+			YAMLValue:    yamlInfo.S3Region,
+			InputTitle:   "Hetzner Object Storage S3 region (optional)",
+			NoteTitle:    "Hetzner Object Storage S3 region (managed by Atmos configuration)",
+			NoteDesc:     yamlInfo.S3Region,
+			IsOptional:   true,
+			DefaultValue: yamlInfo.S3Region,
+		}, &region),
+	}
+	form := huh.NewForm(huh.NewGroup(fields...)).WithTheme(utils.NewAtmosHuhTheme())
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+	return &authTypes.HetznerCredentials{
+		S3AccessKeyID:     accessKeyID,
+		S3SecretAccessKey: secretAccessKey,
+		S3Endpoint:        endpoint,
+		S3Region:          region,
+	}, nil
+}
+
+func getIdentityFlagValue(cmd *cobra.Command) string {
+	if cmd == nil {
+		return viper.GetString(cfg.IdentityFlagName)
+	}
+	if flag := cmd.Flag(cfg.IdentityFlagName); flag != nil && flag.Changed {
+		return flag.Value.String()
+	}
+	if flag := cmd.InheritedFlags().Lookup(cfg.IdentityFlagName); flag != nil && flag.Changed {
+		return flag.Value.String()
+	}
+	return viper.GetString(cfg.IdentityFlagName)
 }

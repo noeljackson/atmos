@@ -227,6 +227,70 @@ func TestExtractAWSUserInfo(t *testing.T) {
 	}
 }
 
+func TestSelectConfigurableUserIdentities(t *testing.T) {
+	selectable, defaultChoice, err := selectConfigurableUserIdentities(map[string]schema.Identity{
+		"aws-admin":              {Kind: "aws/user"},
+		"hetzner-app":            {Kind: "hetzner/project", Default: true},
+		"hetzner-object-storage": {Kind: "hetzner/object-storage"},
+		"prod":                   {Kind: "aws/permission-set"},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"aws-admin", "hetzner-app", "hetzner-object-storage"}, selectable)
+	assert.Equal(t, "hetzner-app", defaultChoice)
+}
+
+func TestValidateConfigurableIdentityChoice(t *testing.T) {
+	identities := map[string]schema.Identity{
+		"hetzner-app": {Kind: "hetzner/project"},
+		"prod":        {Kind: "aws/permission-set"},
+	}
+
+	assert.NoError(t, validateConfigurableIdentityChoice(identities, "hetzner-app"))
+	assert.Error(t, validateConfigurableIdentityChoice(identities, "prod"))
+	assert.Error(t, validateConfigurableIdentityChoice(identities, "missing"))
+}
+
+func TestExtractHetznerProjectInfo(t *testing.T) {
+	info := extractHetznerProjectInfo(schema.Identity{
+		Principal: map[string]interface{}{
+			"project":                 "app",
+			"project_name":            "sonica-app",
+			"token_env":               []interface{}{"TF_VAR_HCLOUD_TOKEN_APP"},
+			"object_storage_identity": "hetzner-object-storage",
+		},
+		Credentials: map[string]interface{}{
+			"token_source_env": "HCLOUD_TOKEN_APP",
+		},
+	})
+
+	assert.Equal(t, "app", info.Project)
+	assert.Equal(t, "sonica-app", info.ProjectName)
+	assert.Equal(t, "HCLOUD_TOKEN_APP", info.TokenSourceEnv)
+	assert.Equal(t, "hetzner-object-storage", info.ObjectStorageIdentity)
+	assert.Equal(t, []string{"TF_VAR_HCLOUD_TOKEN_APP"}, info.TokenEnv)
+	assert.True(t, info.AllConfigured)
+}
+
+func TestExtractHetznerObjectStorageInfo(t *testing.T) {
+	info := extractHetznerObjectStorageInfo(schema.Identity{
+		Principal: map[string]interface{}{
+			"s3_endpoint": "https://hel1.your-objectstorage.com",
+			"s3_region":   "hel1",
+		},
+		Credentials: map[string]interface{}{
+			"s3_access_key_id":     "access",
+			"s3_secret_access_key": "secret",
+		},
+	})
+
+	assert.Equal(t, "access", info.S3AccessKeyID)
+	assert.Equal(t, "secret", info.S3SecretAccessKey)
+	assert.Equal(t, "https://hel1.your-objectstorage.com", info.S3Endpoint)
+	assert.Equal(t, "hel1", info.S3Region)
+	assert.True(t, info.AllConfigured)
+}
+
 func TestValidateSessionDuration(t *testing.T) {
 	tests := []struct {
 		name        string

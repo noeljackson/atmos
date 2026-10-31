@@ -97,6 +97,7 @@ func controlOnlySources(condition string) map[string]string {
 	opener := "{{ if " + condition + " }}"
 	prefix := "auth:\n  identities:\n    service:\n      spec:\n        env:\n          TOKEN: "
 	return map[string]string{
+		"block control opener":                prefix + "|-\n            prefix" + opener + "\n{{ end }}\n",
 		"prefixed plain":                      "# \uE000\n" + prefix + "prefix" + opener + "\n{{ end }}\n",
 		"single quoted":                       prefix + "'" + opener + "'\n{{ end }}\n",
 		"double quoted":                       prefix + "\"" + opener + "\"\n{{ end }}\n",

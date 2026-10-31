@@ -124,6 +124,11 @@ func promotedAuthSources(credential string) map[string]struct {
 			reject bool
 		}{source: strings.Replace(base, "base: &base\n", "base: &base\n    <<: *base\n", 1) + "<<: *base\n", reject: true}
 	}
+	cyclic := result["vars cyclic merge"].source
+	result["cyclic merge sequence"] = struct {
+		source string
+		reject bool
+	}{source: strings.TrimSuffix(cyclic, "<<: *base\n") + "<<: [*base]\n", reject: true}
 	result["direct and merged ownership"] = struct {
 		source string
 		reject bool

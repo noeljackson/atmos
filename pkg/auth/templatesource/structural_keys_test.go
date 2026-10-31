@@ -121,6 +121,7 @@ func structuralKeySources(credential string) map[string]string {
 	all = strings.Replace(all, "spec:", `'s{{ "pe" }}c':`, 1)
 	result["all structural keys"] = strings.Replace(all, "env:", `'e{{ "n" }}v':`, 1)
 	result["cyclic merge"] = "shared: &cfg {<<: *cfg, identities: {service: {spec: {env: {TOKEN: '" + credential + "'}}}}}\n" + `'{{ "au" }}th': *cfg`
+	result["cyclic alias under application data"] = "vars:\n  shared: &cfg {<<: *cfg, identities: {service: {spec: {env: {TOKEN: '" + credential + "'}}}}}\n" + `'{{ "au" }}th': *cfg`
 	return result
 }
 

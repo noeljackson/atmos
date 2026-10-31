@@ -203,3 +203,76 @@ func TestProtectPreservesNonYAMLExpressionsWithoutTemplateKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestProtectDistinguishesGeneratedValuesFromStructuralKeys(t *testing.T) {
+	for name, test := range map[string]struct {
+		source string
+		reject bool
+	}{
+		"whole-value identity generator": {source: `auth:
+  identities:
+    original: {spec: {env: {TOKEN: '{{ call .privileged }}'}}}
+    generated: {{ .generated }}
+vars: {stage: '{{ .stage }}'}
+`},
+		"action followed by structural key colon": {source: `auth:
+  {{ .identitiesName }}:
+    service:
+      spec:
+        env: {TOKEN: '{{ call .privileged }}'}
+`, reject: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			protected, restore, protectErr := Protect(test.source)
+			var output bytes.Buffer
+			if protectErr == nil {
+				require.Equal(t, test.source, restore(protected))
+				renderer, err := template.New("stack").Parse(protected)
+				require.NoError(t, err)
+				data := structuralKeyData(func() string { calls++; return "must-not-run" })
+				data["generated"] = "{spec: {env: {LATER: '{{ call .privileged }}'}}}"
+				require.NoError(t, renderer.Execute(&output, data))
+			}
+			require.Zero(t, calls, "credential helpers must remain deferred across the generator/key boundary")
+			if test.reject {
+				require.ErrorIs(t, protectErr, errUtils.ErrInvalidAuthConfig)
+				require.Empty(t, protected)
+				return
+			}
+			require.NoError(t, protectErr)
+			var document map[string]any
+			require.NoError(t, yaml.Unmarshal([]byte(restore(output.String())), &document))
+			identities := document["auth"].(map[string]any)["identities"].(map[string]any)
+			original := identities["original"].(map[string]any)["spec"].(map[string]any)["env"].(map[string]any)
+			generated := identities["generated"].(map[string]any)["spec"].(map[string]any)["env"].(map[string]any)
+			require.Equal(t, "{{ call .privileged }}", original["TOKEN"])
+			require.Equal(t, "{{ call .privileged }}", generated["LATER"])
+			require.Equal(t, "prod", document["vars"].(map[string]any)["stage"])
+		})
+	}
+}
+
+func TestProtectRendersApplicationDataWithNonEnvironmentIdentity(t *testing.T) {
+	source := `auth: {identities: {service: {kind: aws/user}}}
+vars:
+  {{ if true }}value: '{{ call .ordinary }}'{{ end }}
+`
+	protected, restore, err := Protect(source)
+	require.NoError(t, err)
+	require.Equal(t, source, restore(protected))
+	renderer, err := template.New("stack").Parse(protected)
+	require.NoError(t, err)
+	calls := 0
+	var output bytes.Buffer
+	require.NoError(t, renderer.Execute(&output, map[string]any{"ordinary": func() string {
+		calls++
+		return "prod"
+	}}))
+	require.Equal(t, 1, calls, "ordinary application functions must still execute beside non-env identities")
+	var document map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(restore(output.String())), &document))
+	identity := document["auth"].(map[string]any)["identities"].(map[string]any)["service"].(map[string]any)
+	require.Equal(t, "aws/user", identity["kind"])
+	require.Equal(t, "prod", document["vars"].(map[string]any)["value"])
+}

@@ -203,6 +203,8 @@ auth:
 
 The `bootstrap` store must already be configured and secret-enabled. The identity's `spec.env` is a nonempty map of environment names to Go text templates, evaluated after upstream authentication. Only the upstream credential envelope's data is available as `.credentials`. Dot references and `index` are supported; plain strings remain literal, and template composition is allowed. Missing keys through either lookup form and invalid templates stop authentication without including values in errors. Templates have no filesystem, process-environment, shell, or secret-store helpers. Rendered values are bounded to 1 MiB and cannot contain NUL bytes; at most 256 environment variables may be defined.
 
+Keep the structural YAML keys `auth`, `identities`, `spec`, and `env` literal. Component and identity names may use templates. Write credential templates as quoted strings or block scalars, and put template control actions around auth mappings on standalone lines. Ambiguous structural keys and malformed credential declarations are rejected before general template helpers run.
+
 The unreleased `principal.environment` syntax has been replaced by `spec.env`. Move those mappings to `spec.env` and use explicit credential templates. Credential references use `path` in place of the former `key` name.
 
 Authentication rereads the stores. Five-minute credentials allow reuse within the current process; a fresh process reads them again. Logout clears the identity's environment. Atmos does not change its own process environment or write cloud credential files for this identity. The native plugin runs as your operating-system user and must still be trusted.

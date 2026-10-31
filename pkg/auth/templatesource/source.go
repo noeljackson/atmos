@@ -34,9 +34,10 @@ var (
 
 // sourceIndex maps decoder rune columns back to original byte positions once per input.
 type sourceIndex struct {
-	text    string
-	lines   []string
-	offsets []int
+	text      string
+	lines     []string
+	offsets   []int
+	authProbe authShapeProbe
 }
 
 func newSourceIndex(input string) *sourceIndex {
@@ -84,7 +85,7 @@ func mayContainAuth(input string) bool {
 	}
 	for _, key := range []string{authKey, "identities", "spec", "env"} {
 		if !strings.Contains(input, key) {
-			return false
+			return templatedMappingKeySyntax.MatchString(input)
 		}
 	}
 	return true
@@ -101,14 +102,14 @@ func documentTemplateSpans(input string) ([]templateSpan, error) {
 			return spans, nil
 		}
 		if err != nil {
-			if !malformedAuthSource(input) {
+			if !malformedAuthSource(input) && !malformedTemplatedAuthSource(input) {
 				return nil, nil
 			}
 			return nil, errUtils.Build(errUtils.ErrInvalidAuthConfig).
 				WithExplanation("Auth credential templates cannot be protected in malformed YAML.").
-				WithHint("Use valid YAML and write each credential template inline in spec.env as a quoted string or block scalar.").Err()
+				WithHint("Use valid YAML with literal auth, identities, spec, and env keys; write each credential template inline in spec.env as a quoted string or block scalar.").Err()
 		}
-		if err := visitAuthMappings(source.lines, &document, func(auth *yaml.Node) error {
+		if err := visitAuthMappings(source, &document, func(auth *yaml.Node) error {
 			values, err := environmentTemplateSpans(source, auth)
 			spans = append(spans, values...)
 			return err
@@ -163,7 +164,7 @@ func protectSpans(input string, spans []templateSpan) (string, func(string) stri
 }
 
 func environmentTemplateSpans(source *sourceIndex, auth *yaml.Node) ([]templateSpan, error) {
-	identities, err := mappingPaths(auth, "identities")
+	identities, err := mappingPaths(source, auth, "identities")
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +174,7 @@ func environmentTemplateSpans(source *sourceIndex, auth *yaml.Node) ([]templateS
 			continue
 		}
 		for index := 1; index < len(identitySet.node.Content); index += 2 {
-			envs, err := mappingPaths(identitySet.node.Content[index], "spec", "env")
+			envs, err := mappingPaths(source, identitySet.node.Content[index], "spec", "env")
 			if err != nil {
 				return nil, err
 			}
@@ -434,11 +435,11 @@ type mappingMatch struct {
 }
 
 // mappingPaths visits every occurrence, including alternate template branches and duplicate keys.
-func mappingPaths(node *yaml.Node, keys ...string) ([]mappingMatch, error) {
-	return appendMappingPaths(nil, node, false, keys)
+func mappingPaths(source *sourceIndex, node *yaml.Node, keys ...string) ([]mappingMatch, error) {
+	return appendMappingPaths(source, nil, node, false, keys)
 }
 
-func appendMappingPaths(matches []mappingMatch, node *yaml.Node, aliased bool, keys []string) ([]mappingMatch, error) {
+func appendMappingPaths(source *sourceIndex, matches []mappingMatch, node *yaml.Node, aliased bool, keys []string) ([]mappingMatch, error) {
 	if node == nil {
 		return matches, nil
 	}
@@ -452,15 +453,22 @@ func appendMappingPaths(matches []mappingMatch, node *yaml.Node, aliased bool, k
 	if len(keys) == 0 {
 		return append(matches, mappingMatch{node: node, aliased: aliased}), nil
 	}
-	if node.Kind != yaml.MappingNode {
+	if node.Kind != yaml.MappingNode || generatedMappingValue(source, node) {
 		return matches, nil
 	}
+	return appendMappingPathEntries(source, matches, node, aliased, keys)
+}
+
+func appendMappingPathEntries(source *sourceIndex, matches []mappingMatch, node *yaml.Node, aliased bool, keys []string) ([]mappingMatch, error) {
 	for index := 0; index < len(node.Content); index += 2 {
+		if templatedYAMLKey(node.Content[index]) {
+			return nil, templatedAuthKeyError()
+		}
 		if node.Content[index].Value != keys[0] {
 			continue
 		}
 		var err error
-		matches, err = appendMappingPaths(matches, node.Content[index+1], aliased, keys[1:])
+		matches, err = appendMappingPaths(source, matches, node.Content[index+1], aliased, keys[1:])
 		if err != nil {
 			return nil, err
 		}
@@ -480,26 +488,29 @@ func templatedMerge(node *yaml.Node) bool {
 	return false
 }
 
-func visitAuthMappings(lines []string, node *yaml.Node, visit func(*yaml.Node) error) error {
+func visitAuthMappings(source *sourceIndex, node *yaml.Node, visit func(*yaml.Node) error) error {
 	if node.Kind == yaml.MappingNode {
-		return visitAuthMappingEntries(lines, node, visit)
+		return visitAuthMappingEntries(source, node, visit)
 	}
 	for _, child := range node.Content {
-		if err := visitAuthMappings(lines, child, visit); err != nil {
+		if err := visitAuthMappings(source, child, visit); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func visitAuthMappingEntries(lines []string, node *yaml.Node, visit func(*yaml.Node) error) error {
+func visitAuthMappingEntries(source *sourceIndex, node *yaml.Node, visit func(*yaml.Node) error) error {
 	for index := 0; index < len(node.Content); index += 2 {
 		key, value := node.Content[index], node.Content[index+1]
 		// Application vars and settings are data, including any auth-shaped descendants.
 		if key.Value == "vars" || key.Value == "settings" {
 			continue
 		}
-		if inlineAuthControlAt(lines, key) {
+		if templatedYAMLKey(key) && source.authProbe.couldBeAuthMapping(value) {
+			return templatedAuthKeyError()
+		}
+		if inlineAuthControlAt(source.lines, key) {
 			return errUtils.Build(errUtils.ErrInvalidAuthConfig).
 				WithExplanation("Inline template controls cannot wrap auth identity declarations safely.").
 				WithHint("Put template controls on standalone lines around auth configuration; keep credential templates inline in spec.env.").Err()
@@ -509,7 +520,7 @@ func visitAuthMappingEntries(lines []string, node *yaml.Node, visit func(*yaml.N
 				return err
 			}
 		}
-		if err := visitAuthMappings(lines, value, visit); err != nil {
+		if err := visitAuthMappings(source, value, visit); err != nil {
 			return err
 		}
 	}

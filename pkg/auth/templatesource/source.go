@@ -29,15 +29,18 @@ var (
 	commentAction  = regexp.MustCompile(`(?m)^[ \t]*\{\{-?[ \t\r\n]*/\*[^*]*\*+(?:[^/*][^*]*\*+)*/[ \t\r\n]*-?\}\}[ \t\r]*$`)
 	controlLine    = regexp.MustCompile(`^\{\{-?\s*(if|else|end|range|with|define|block|template)\b(?:[^"'\x60{}]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60[^\x60]*\x60)*\}\}$`)
 	controlOpening = regexp.MustCompile(`\{\{-?\s*(if|range|with|define|block)\b(?:[^"'\x60]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60[^\x60]*\x60)*?\}\}`)
-	mappingKey     = regexp.MustCompile(`(?m)(^|[,{]|\}\})\s*("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[[:alnum:]_]+)\s*:`)
+	mappingKey     = regexp.MustCompile(`(?m)(^|[,{]|\}\})\s*(?:\?\s+)?("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[[:alnum:]_]+)\s*:`)
 )
 
 // sourceIndex maps decoder rune columns back to original byte positions once per input.
 type sourceIndex struct {
-	text      string
-	lines     []string
-	offsets   []int
-	authProbe authShapeProbe
+	text          string
+	lines         []string
+	offsets       []int
+	authProbe     authShapeProbe
+	authVisited   map[*yaml.Node]bool
+	mergeVisits   map[*yaml.Node]mergeVisitState
+	controlMarker rune
 }
 
 func newSourceIndex(input string) *sourceIndex {
@@ -48,7 +51,9 @@ func newSourceIndex(input string) *sourceIndex {
 		offsets[index] = offset
 		offset += len(line)
 	}
-	return &sourceIndex{text: input, lines: lines, offsets: offsets}
+	source := &sourceIndex{text: input, lines: lines, offsets: offsets}
+	source.authProbe.source = source
+	return source
 }
 
 type templateSpan struct {
@@ -92,8 +97,14 @@ func mayContainAuth(input string) bool {
 }
 
 func documentTemplateSpans(input string) ([]templateSpan, error) {
-	decoder := yaml.NewDecoder(strings.NewReader(templateYAML(input)))
 	source := newSourceIndex(input)
+	if controlOpening.MatchString(input) {
+		source.controlMarker = projectionMarker(input)
+		if source.controlMarker == 0 {
+			return nil, inlineTemplateError()
+		}
+	}
+	decoder := yaml.NewDecoder(strings.NewReader(templateYAML(input, source.controlMarker)))
 	var spans []templateSpan
 	for {
 		var document yaml.Node
@@ -227,10 +238,13 @@ func requiresInlineTemplate(source *sourceIndex, value *yaml.Node, aliased bool)
 	if unquotedTemplate(source, value) {
 		return true
 	}
+	if !strings.Contains(scalar.Value, templateOpening) && maskedScalarTemplate(source, scalar) {
+		return true
+	}
 	// An anchor can live outside auth, so hiding only the alias would still
 	// let the general renderer execute its template before credentials exist.
 	indirect := aliased || value.Kind == yaml.AliasNode || value.Anchor != "" || value.Style&yaml.TaggedStyle != 0
-	return indirect && containsTemplate(value, make(map[*yaml.Node]bool))
+	return indirect && containsTemplate(source, value, make(map[*yaml.Node]bool))
 }
 
 // templateBeforeValue rejects controls hidden as comments before a decoded env scalar.
@@ -254,7 +268,7 @@ func scalarContainsTemplate(source *sourceIndex, value *yaml.Node) bool {
 
 // unquotedTemplate prevents projection from turning an unquoted action into an accepted scalar.
 func unquotedTemplate(source *sourceIndex, value *yaml.Node) bool {
-	if value.Kind != yaml.ScalarNode || value.Style != 0 || !strings.Contains(value.Value, templateOpening) {
+	if value.Kind != yaml.ScalarNode || value.Style != 0 {
 		return false
 	}
 	start := scalarStart(source, value)
@@ -278,16 +292,16 @@ func inlineTemplateError() error {
 		WithHint("Write each credential template inline in spec.env as a quoted string or block scalar.").Err()
 }
 
-func containsTemplate(node *yaml.Node, visited map[*yaml.Node]bool) bool {
+func containsTemplate(source *sourceIndex, node *yaml.Node, visited map[*yaml.Node]bool) bool {
 	if node == nil || visited[node] {
 		return false
 	}
 	visited[node] = true
-	if strings.Contains(node.Value, templateOpening) || containsTemplate(node.Alias, visited) {
+	if strings.Contains(node.Value, templateOpening) || maskedScalarTemplate(source, node) || containsTemplate(source, node.Alias, visited) {
 		return true
 	}
 	for _, child := range node.Content {
-		if containsTemplate(child, visited) {
+		if containsTemplate(source, child, visited) {
 			return true
 		}
 	}
@@ -298,7 +312,7 @@ func containsTemplate(node *yaml.Node, visited map[*yaml.Node]bool) bool {
 // Standalone controls become comments, retaining template markers inside quoted/block scalars.
 // Inline block openers become same-width scalar text; closing actions retain their markers too.
 // The returned source is never rendered, so controls and comments retain their spelling.
-func templateYAML(input string) string {
+func templateYAML(input string, marker rune) string {
 	input = commentAction.ReplaceAllStringFunc(input, commentTemplateAction)
 	lines := strings.Split(input, newline)
 	for index, line := range lines {
@@ -317,7 +331,7 @@ func templateYAML(input string) string {
 			}
 		}
 		lines[index] = controlOpening.ReplaceAllStringFunc(line, func(action string) string {
-			return strings.Repeat("x", utf8.RuneCountInString(action))
+			return string(marker) + strings.Repeat("x", utf8.RuneCountInString(action)-1)
 		})
 	}
 	return strings.Join(lines, newline)
@@ -447,7 +461,7 @@ func appendMappingPaths(source *sourceIndex, matches []mappingMatch, node *yaml.
 		node = node.Alias
 		aliased = true
 	}
-	if templatedMerge(node) {
+	if templatedMerge(source, node) {
 		return nil, inlineTemplateError()
 	}
 	if len(keys) == 0 {
@@ -461,7 +475,7 @@ func appendMappingPaths(source *sourceIndex, matches []mappingMatch, node *yaml.
 
 func appendMappingPathEntries(source *sourceIndex, matches []mappingMatch, node *yaml.Node, aliased bool, keys []string) ([]mappingMatch, error) {
 	for index := 0; index < len(node.Content); index += 2 {
-		if templatedYAMLKey(node.Content[index]) {
+		if templatedYAMLKey(source, node.Content[index]) {
 			return nil, templatedAuthKeyError()
 		}
 		if node.Content[index].Value != keys[0] {
@@ -476,12 +490,12 @@ func appendMappingPathEntries(source *sourceIndex, matches []mappingMatch, node 
 	return matches, nil
 }
 
-func templatedMerge(node *yaml.Node) bool {
+func templatedMerge(source *sourceIndex, node *yaml.Node) bool {
 	if node.Kind != yaml.MappingNode {
 		return false
 	}
 	for index := 0; index < len(node.Content); index += 2 {
-		if node.Content[index].Tag == "!!merge" && containsTemplate(node.Content[index+1], make(map[*yaml.Node]bool)) {
+		if node.Content[index].Tag == "!!merge" && containsTemplate(source, node.Content[index+1], make(map[*yaml.Node]bool)) {
 			return true
 		}
 	}
@@ -503,26 +517,37 @@ func visitAuthMappings(source *sourceIndex, node *yaml.Node, visit func(*yaml.No
 func visitAuthMappingEntries(source *sourceIndex, node *yaml.Node, visit func(*yaml.Node) error) error {
 	for index := 0; index < len(node.Content); index += 2 {
 		key, value := node.Content[index], node.Content[index+1]
+		if key.Tag == "!!merge" {
+			if err := visitMergedAuth(source, value, visit); err != nil {
+				return err
+			}
+			continue
+		}
 		// Application vars and settings are data, including any auth-shaped descendants.
 		if key.Value == "vars" || key.Value == "settings" {
 			continue
 		}
-		if templatedYAMLKey(key) && source.authProbe.couldBeAuthMapping(value) {
-			return templatedAuthKeyError()
-		}
-		if inlineAuthControlAt(source.lines, key) {
-			return errUtils.Build(errUtils.ErrInvalidAuthConfig).
-				WithExplanation("Inline template controls cannot wrap auth identity declarations safely.").
-				WithHint("Put template controls on standalone lines around auth configuration; keep credential templates inline in spec.env.").Err()
-		}
-		if key.Value == authKey {
-			if err := visit(value); err != nil {
-				return err
-			}
+		if err := visitAuthEntry(source, key, value, visit); err != nil {
+			return err
 		}
 		if err := visitAuthMappings(source, value, visit); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func visitAuthEntry(source *sourceIndex, key, value *yaml.Node, visit func(*yaml.Node) error) error {
+	if inlineAuthControlAt(source.lines, key) {
+		return errUtils.Build(errUtils.ErrInvalidAuthConfig).
+			WithExplanation("Inline template controls cannot wrap auth identity declarations safely.").
+			WithHint("Put template controls on standalone lines around auth configuration; keep credential templates inline in spec.env.").Err()
+	}
+	if templatedYAMLKey(source, key) && source.authProbe.couldBeAuthMapping(value) {
+		return templatedAuthKeyError()
+	}
+	if key.Value == authKey {
+		return visitAuthOnce(source, value, visit)
 	}
 	return nil
 }

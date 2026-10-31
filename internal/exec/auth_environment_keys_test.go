@@ -87,6 +87,7 @@ func structuralKeyInputs(credential string) map[string]string {
 	} {
 		result[name] = strings.Replace(base, key.from, key.to, 1)
 	}
+	result["datasource key"] = strings.Replace(base, "auth:", "'"+credential+"':", 1)
 	shared := "shared: &cfg {identities: {service: {spec: {env: {TOKEN: '" + credential + "'}}}}}\n"
 	result["aliased root"] = shared + `'{{ "au" }}th': *cfg`
 	result["alias key"] = `keyname: &k '{{ "au" }}th'` + "\n*k: " + strings.TrimPrefix(base, "auth: ")

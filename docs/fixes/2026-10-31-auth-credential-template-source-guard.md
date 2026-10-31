@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-31
 
+**Updated:** 2026-11-01
+
 ## Summary
 
 Ordinary inline conditionals render in manifests containing auth configuration. Every occurrence of an identity's `spec.env` is inspected before general template rendering, including duplicate keys and alternate conditional branches.
@@ -28,6 +30,10 @@ The [PR benchmark report](https://github.com/cloudposse/atmos/actions/runs/40971
 - Build source line offsets once per input and splice protected spans with one builder pass instead of repeatedly splitting or copying the full manifest.
 - Reject templated structural auth keys before general rendering, including partial and multiple expressions, aliases, tagged keys, and malformed double quoting. Keep dynamic component and identity names supported. Memoize fixed credential-shape probes by node and path position so shared merge graphs stay bounded; cycles fail closed.
 - Distinguish mapping-key colons from ordinary expressions and assignments. After a YAML decoding failure, inspect an inert action projection for auth ownership before rejecting dynamic application data; never evaluate helpers to identify a declaration.
+- Recognize explicit YAML keys such as `? auth` during malformed-source checks.
+- Follow auth entries promoted by root merge aliases, including anchors beneath `vars` and `settings`. Bound cycles and deduplicate physical auth declarations so repeated or direct-plus-merged ownership cannot produce overlapping replacements; leave unpromoted application data renderable.
+- Inspect original bounded quoted/block scalar source through aliases and properties, including comments between tags, anchors, and values. Retain projected controls with an input-local marker so prefixed plain credential values cannot lose their markers; preserve decoder rune columns and the no-auth fast path.
+- Ignore separated YAML comments in the raw key scan while retaining quoted and adjacent hash characters. Test an actual datasource call in a structural key as well as credential-value calls.
 
 ## Validation
 
@@ -53,7 +59,9 @@ Further regressions reproduce and reject helper execution behind split auth keys
 
 Structural-key tests cover root, identities, spec, and env keys with partial/multiple expressions, escaping, flow/unquoted forms, aliases, merges, cycles, URI tags, and malformed double quotes. All three host renderers assert zero HTTP helper requests on rejected inputs, with callable ordinary-helper positive controls. Dynamic logical names and application data still render; the multiline-control case rejects before credential execution. Compatibility regressions also cover bare expressions, assignments, colons in action arguments, legacy datasource declarations, and inline generated YAML. The complete source package and all 36 compatibility tests caught by the broader run passed after narrowing the malformed-source check.
 
-After merging upstream `0f878a270969`, all 11 affected root packages, the standalone plugin suite, full custom lint, root Go compilation, and production website build passed. Two final public tests distinguish generated identities from block-style structural keys and preserve ordinary rendering beside non-environment identities. The complete affected suite passed again with those tests; affected lint passed and source coverage reached 357/372 statements (96.0%). These remain scoped own-package measurements, with CI Codecov authoritative.
+At `e0b926f43239`, after merging upstream `0f878a270969`, all 11 affected root packages, the standalone plugin suite, full custom lint, root Go compilation, and production website build passed. Two public tests distinguish generated identities from block-style structural keys and preserve ordinary rendering beside non-environment identities. The complete affected suite passed again with those tests; affected lint passed and source coverage reached 357/372 statements (96.0%).
+
+The remaining inline findings were reproduced before fixing them: explicit-key malformed input, promoted merge auth, and projected control-only credential values executed source or HTTP helpers before authentication. Regression tests now cover all three host renderers, merge chains/repeated ownership/cycles, split scalar properties and comments, and prefixed plain controls. Balanced quoted/block templates, ordinary application controls, Unicode source positions, flow neighbors, and quoted/adjacent hashes remain supported. The complete 11-package root suite and standalone plugin, full custom lint, and root compilation passed with the combined fix. Source coverage reached 445/471 statements (94.5%); these are scoped own-package measurements, with CI Codecov authoritative. Website sources are unchanged from the successful production build.
 
 ## Follow-ups
 

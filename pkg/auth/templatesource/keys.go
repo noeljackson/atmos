@@ -21,12 +21,13 @@ func hasTemplatedMappingKey(input string) bool {
 	if !templatedMappingKeySyntax.MatchString(input) {
 		return false
 	}
-	scanner := mappingKeyScanner{beforeValue: true}
+	scanner := mappingKeyScanner{beforeValue: true, separated: true}
 	for index := 0; index < len(input); {
 		consumed, found := scanner.advance(input[index:])
 		if found {
 			return true
 		}
+		scanner.separated = strings.ContainsRune(" \t\r\n", rune(input[index+consumed-1]))
 		index += consumed
 	}
 	return false
@@ -36,6 +37,7 @@ type mappingKeyScanner struct {
 	beforeValue bool
 	templated   bool
 	quote       byte
+	separated   bool
 }
 
 func (scanner *mappingKeyScanner) advance(input string) (int, bool) {
@@ -47,6 +49,13 @@ func (scanner *mappingKeyScanner) advance(input string) (int, bool) {
 	}
 	if scanner.quote != 0 {
 		return scanner.advanceQuoted(input), false
+	}
+	if input[0] == '#' && scanner.separated {
+		end := strings.IndexByte(input, '\n')
+		if end < 0 {
+			end = len(input)
+		}
+		return end, false
 	}
 	// URI tag colons describe a key property, not the mapping's value boundary.
 	if strings.HasPrefix(input, "!<") {
@@ -86,8 +95,8 @@ func (scanner *mappingKeyScanner) advanceUnquoted(value byte) bool {
 	return false
 }
 
-func templatedYAMLKey(key *yaml.Node) bool {
-	return key.Kind != yaml.ScalarNode || strings.Contains(key.Value, templateOpening)
+func templatedYAMLKey(source *sourceIndex, key *yaml.Node) bool {
+	return key.Kind != yaml.ScalarNode || strings.Contains(key.Value, templateOpening) || maskedScalarTemplate(source, key)
 }
 
 type authProbeState struct {
@@ -96,6 +105,7 @@ type authProbeState struct {
 }
 
 type authShapeProbe struct {
+	source   *sourceIndex
 	visiting map[authProbeState]bool
 	results  map[authProbeState]bool
 }
@@ -159,7 +169,7 @@ func (probe *authShapeProbe) entries(node *yaml.Node, keys []string) bool {
 			}
 			continue
 		}
-		if keys[0] != "" && key.Value != keys[0] && !templatedYAMLKey(key) {
+		if keys[0] != "" && key.Value != keys[0] && !templatedYAMLKey(probe.source, key) {
 			continue
 		}
 		if probe.path(value, keys[1:]) {

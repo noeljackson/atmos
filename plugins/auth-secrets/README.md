@@ -47,6 +47,8 @@ The identity's `spec.env` is a nonempty map of environment variable names to Go 
 
 Keep the structural YAML keys `auth`, `identities`, `spec`, and `env` literal. Component and identity names may use templates. Write credential templates as quoted strings or block scalars, and put template control actions around auth mappings on standalone lines. Ambiguous structural keys and malformed credential declarations are rejected before general template helpers run.
 
+Malformed template YAML is rejected before general helpers run when Atmos cannot prove auth credential ownership. The error explains: `Auth credential ownership cannot be proven from malformed YAML.` This conservative policy can reject dynamic keys or auth-shaped application data under `vars` or `settings`, even when rendering would produce valid YAML. Keep raw YAML valid, balance template controls, and use safely quoted values or block scalars.
+
 Output actions and formatting helpers accept scalar values; select a credential instead of rendering the whole `.credentials` map. `printf` supports scalar Go formats, indexed arguments, dynamic integer widths/precision, and pipeline composition. Formatting is checked before allocation, including cumulative expansion from repeated directives. Escape and print helpers have the same 1 MiB limit. Conservative formatting estimates can reject a heavily escaped or high-precision value near that limit. Composite values, custom formatters, malformed formats, and noninteger dynamic widths/precision are rejected.
 
 The unreleased `principal.environment` mapping has been replaced by `spec.env`; move mappings there and reference credentials explicitly with templates. The former credential-reference `key` setting is now named `path`.

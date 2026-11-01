@@ -208,6 +208,8 @@ The `bootstrap` store must already be configured and secret-enabled. The identit
 
 Keep the structural YAML keys `auth`, `identities`, `spec`, and `env` literal. Component and identity names may use templates. Write credential templates as quoted strings or block scalars, and put template control actions around auth mappings on standalone lines. Ambiguous structural keys and malformed credential declarations are rejected before general template helpers run.
 
+Malformed template YAML is rejected before general helpers run when Atmos cannot prove auth credential ownership. The error explains: `Auth credential ownership cannot be proven from malformed YAML.` This conservative policy can reject dynamic keys or auth-shaped application data under `vars` or `settings`, even when rendering would produce valid YAML. Keep raw YAML valid, balance template controls, and use safely quoted values or block scalars.
+
 The unreleased `principal.environment` syntax has been replaced by `spec.env`. Move those mappings to `spec.env` and use explicit credential templates. Credential references use `path` in place of the former `key` name.
 
 Authentication rereads the stores. Five-minute credentials allow reuse within the current process; a fresh process reads them again. Logout clears the identity's environment. Atmos does not change its own process environment or write cloud credential files for this identity. The native plugin runs as your operating-system user and must still be trusted.

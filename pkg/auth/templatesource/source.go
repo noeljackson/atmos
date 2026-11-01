@@ -117,8 +117,8 @@ func documentTemplateSpans(input string) ([]templateSpan, error) {
 				return nil, nil
 			}
 			return nil, errUtils.Build(errUtils.ErrInvalidAuthConfig).
-				WithExplanation("Auth credential templates cannot be protected in malformed YAML.").
-				WithHint("Use valid YAML with literal auth, identities, spec, and env keys; write each credential template inline in spec.env as a quoted string or block scalar.").Err()
+				WithExplanation("Auth credential ownership cannot be proven from malformed YAML.").
+				WithHint("Use valid raw YAML with literal auth, identities, spec, and env keys. Balance template controls and use inline quoted strings or block scalars; ambiguous vars/settings data follows the same rule.").Err()
 		}
 		if err := visitAuthMappings(source, &document, func(auth *yaml.Node) error {
 			values, err := environmentTemplateSpans(source, auth)
@@ -359,7 +359,7 @@ func inlineAuthControl(line string) bool {
 		return false
 	}
 	payload := strings.TrimSpace(line[opening[1]:])
-	return leadingAuthMapping(payload) || hasRawAuthPathKeys(payload)
+	return leadingAuthMapping(payload)
 }
 
 // leadingAuthMapping recognizes an auth key even when its children are on later lines.

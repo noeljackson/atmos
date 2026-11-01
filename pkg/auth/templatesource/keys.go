@@ -210,11 +210,12 @@ func templatedAuthKeyError() error {
 		WithHint("Keep auth, identities, spec, and env keys literal; templates may select component and identity names or credential string values.").Err()
 }
 
-// malformedTemplatedAuthSource inspects an inert action projection only on decode
+// rejectMalformedAuthSource inspects an inert action projection only on decode
 // failure. Dynamic application keys and non-output actions can precede ordinary
-// YAML keys; their presence alone does not establish credential configuration.
-func malformedTemplatedAuthSource(input string) bool {
-	if !templatedMappingKeySyntax.MatchString(input) {
+// YAML keys; parsed ownership takes precedence over raw credential-key evidence.
+func rejectMalformedAuthSource(input string) bool {
+	rawAuth := hasRawAuthPathKeys(input)
+	if !rawAuth && !templatedMappingKeySyntax.MatchString(input) {
 		return false
 	}
 	projected := templateAction.ReplaceAllStringFunc(input, func(action string) string {
@@ -232,7 +233,7 @@ func malformedTemplatedAuthSource(input string) bool {
 			return false
 		}
 		if err != nil {
-			return hasTemplatedMappingKey(input)
+			return rawAuth || hasTemplatedMappingKey(input)
 		}
 		markProjectedKeys(&document)
 		if visitAuthMappings(source, &document, func(auth *yaml.Node) error {

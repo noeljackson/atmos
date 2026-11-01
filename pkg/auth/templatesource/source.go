@@ -113,7 +113,7 @@ func documentTemplateSpans(input string) ([]templateSpan, error) {
 			return spans, nil
 		}
 		if err != nil {
-			if !malformedAuthSource(input) && !malformedTemplatedAuthSource(input) {
+			if !rejectMalformedAuthSource(input) {
 				return nil, nil
 			}
 			return nil, errUtils.Build(errUtils.ErrInvalidAuthConfig).
@@ -130,10 +130,10 @@ func documentTemplateSpans(input string) ([]templateSpan, error) {
 	}
 }
 
-// malformedAuthSource requires evidence of the whole credential path before rejecting
-// arbitrary template text that is not valid YAML, such as shell commands with JSON bodies.
+// hasRawAuthPathKeys collects credential-key syntax without claiming ownership.
+// Rejection uses this evidence only when the inert ownership projection cannot decode.
 // Quoted keys are decoded independently so escaped spellings retain the same protection.
-func malformedAuthSource(input string) bool {
+func hasRawAuthPathKeys(input string) bool {
 	keys := make(map[string]bool, 4)
 	for _, match := range mappingKey.FindAllStringSubmatch(input, -1) {
 		var key string
@@ -359,7 +359,7 @@ func inlineAuthControl(line string) bool {
 		return false
 	}
 	payload := strings.TrimSpace(line[opening[1]:])
-	return leadingAuthMapping(payload) || malformedAuthSource(payload)
+	return leadingAuthMapping(payload) || hasRawAuthPathKeys(payload)
 }
 
 // leadingAuthMapping recognizes an auth key even when its children are on later lines.
@@ -503,6 +503,9 @@ func templatedMerge(source *sourceIndex, node *yaml.Node) bool {
 }
 
 func visitAuthMappings(source *sourceIndex, node *yaml.Node, visit func(*yaml.Node) error) error {
+	if node.Kind == yaml.AliasNode {
+		return visitMergedAuth(source, node, visit)
+	}
 	if node.Kind == yaml.MappingNode {
 		return visitAuthMappingEntries(source, node, visit)
 	}

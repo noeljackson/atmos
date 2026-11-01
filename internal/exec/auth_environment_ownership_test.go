@@ -124,3 +124,39 @@ func promotedAuthInputs(credential string) map[string]struct {
 	}{source: "defaults: &base\n  auth: {identities: {service: {spec: {env: {TOKEN: '" + credential + "'}}}}}\n  vars: {stage: '{{ .stage }}'}\n<<: *base\n"}
 	return result
 }
+
+func TestAuthEnvironmentPromotedComponentsDeferBeforeHelpers(t *testing.T) {
+	server, calls := structuralKeyServer(t)
+	helper := fmt.Sprintf(`{{ (ds %q).token }}`, server.URL)
+	config := &schema.AtmosConfiguration{Templates: schema.Templates{Settings: schema.TemplatesSettings{Enabled: true, Gomplate: schema.TemplatesSettingsGomplate{Enabled: true}}}}
+	for name, render := range authEnvironmentTemplateRenderers(config) {
+		t.Run(name, func(t *testing.T) {
+			for kind, source := range componentPromotionInputs(helper) {
+				t.Run(kind, func(t *testing.T) {
+					calls.Store(0)
+					output, err := render(source, map[string]any{"stage": "prod"})
+					require.Zero(t, calls.Load(), "configuration references must not expose promoted component credentials to general helpers")
+					require.NoError(t, err)
+					var document map[string]any
+					require.NoError(t, yaml.Unmarshal([]byte(output), &document))
+					component := document["components"].(map[string]any)["terraform"].(map[string]any)["example"].(map[string]any)
+					env := component["auth"].(map[string]any)["identities"].(map[string]any)["service"].(map[string]any)["spec"].(map[string]any)["env"].(map[string]any)
+					require.Equal(t, helper, env["TOKEN"])
+					require.Equal(t, "prod", component["vars"].(map[string]any)["stage"])
+					require.NotContains(t, output, "{{ .stage }}")
+				})
+			}
+		})
+	}
+}
+
+func componentPromotionInputs(credential string) map[string]string {
+	application := "{auth: {identities: {app: {spec: {env: {TOKEN: '{{ .stage }}'}}}}}}"
+	component := "{auth: {identities: {service: {spec: {env: {TOKEN: '" + credential + "'}}}}}, vars: {stage: '{{ .stage }}', application: " + application + "}}"
+	result := make(map[string]string)
+	for _, section := range []string{"vars", "settings"} {
+		result[section+" root merge"] = section + ":\n  bundle: &bundle {components: {terraform: {example: " + component + "}}}\n  ordinary: " + application + "\n<<: *bundle\n"
+		result[section+" component-map alias"] = section + ":\n  components: &componentsAnchor {example: " + component + "}\n  ordinary: " + application + "\ncomponents: {terraform: *componentsAnchor}\n"
+	}
+	return result
+}

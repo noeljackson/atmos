@@ -9,8 +9,8 @@ const (
 	mergeVisited
 )
 
-// visitMergedAuth follows only auth entries promoted by a configuration merge.
-// Other children remain application data even when the anchor lives under vars/settings.
+// visitMergedAuth follows configuration references through shared ownership rules.
+// Referenced component auth is visited while vars/settings children remain application data.
 // Per-input states bound shared merge graphs and reject cycles before rendering.
 func visitMergedAuth(source *sourceIndex, node *yaml.Node, visit func(*yaml.Node) error) error {
 	if source.mergeVisits == nil {
@@ -41,26 +41,7 @@ func visitMergeNode(source *sourceIndex, node *yaml.Node, visit func(*yaml.Node)
 			}
 		}
 	case yaml.MappingNode:
-		return visitMergedAuthEntries(source, node, visit)
-	}
-	return nil
-}
-
-func visitMergedAuthEntries(source *sourceIndex, node *yaml.Node, visit func(*yaml.Node) error) error {
-	for index := 0; index < len(node.Content); index += 2 {
-		key, value := node.Content[index], node.Content[index+1]
-		if key.Tag == "!!merge" {
-			if err := visitMergedAuth(source, value, visit); err != nil {
-				return err
-			}
-			continue
-		}
-		if key.Value != authKey && !templatedYAMLKey(source, key) {
-			continue
-		}
-		if err := visitAuthEntry(source, key, value, visit); err != nil {
-			return err
-		}
+		return visitAuthMappingEntries(source, node, visit)
 	}
 	return nil
 }
